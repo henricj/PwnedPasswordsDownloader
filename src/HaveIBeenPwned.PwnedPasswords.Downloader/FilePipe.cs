@@ -6,102 +6,101 @@ using System.Text;
 
 using Microsoft.Win32.SafeHandles;
 
-namespace HaveIBeenPwned.PwnedPasswords
+namespace HaveIBeenPwned.PwnedPasswords;
+
+class FilePipe : IDisposable
 {
-    internal class FilePipe : IDisposable
+    readonly SafeFileHandle _handle;
+    readonly Pipe _pipe;
+    readonly Task _readerTask;
+    long _offset;
+    bool _disposedValue;
+
+    internal FilePipe(SafeFileHandle handle)
     {
-        private readonly SafeFileHandle _handle;
-        private readonly Pipe _pipe;
-        private readonly Task _readerTask;
-        private long _offset = 0;
-        private bool _disposedValue;
+        _handle = handle;
+        _pipe = new Pipe();
+        _readerTask = StartWriter();
+    }
 
-        internal FilePipe(SafeFileHandle handle)
+    async Task StartWriter()
+    {
+        try
         {
-            _handle = handle;
-            _pipe = new Pipe();
-            _readerTask = StartWriter();
-        }
-
-        private async Task StartWriter()
-        {
-            try
+            while (true)
             {
-                while (true)
+                if (!_pipe.Reader.TryRead(out ReadResult result))
                 {
-                    if (!_pipe.Reader.TryRead(out ReadResult result))
-                    {
-                        await _pipe.Reader.ReadAsync().ConfigureAwait(false);
-                    }
+                    await _pipe.Reader.ReadAsync().ConfigureAwait(false);
+                }
 
-                    foreach (ReadOnlyMemory<byte> item in result.Buffer)
-                    {
-                        await RandomAccess.WriteAsync(_handle, item, _offset).ConfigureAwait(false);
-                        _offset += item.Length;
-                    }
+                foreach (ReadOnlyMemory<byte> item in result.Buffer)
+                {
+                    await RandomAccess.WriteAsync(_handle, item, _offset).ConfigureAwait(false);
+                    _offset += item.Length;
+                }
 
-                    _pipe.Reader.AdvanceTo(result.Buffer.End);
+                _pipe.Reader.AdvanceTo(result.Buffer.End);
 
-                    if (result.IsCompleted)
-                    {
-                        break;
-                    }
+                if (result.IsCompleted)
+                {
+                    break;
                 }
             }
-            finally
-            {
-                await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
-            }
         }
-
-        internal void Write(ReadOnlySpan<byte> span)
+        finally
         {
-            Span<byte> destination = _pipe.Writer.GetSpan(span.Length);
-            span.CopyTo(destination);
-            _pipe.Writer.Advance(span.Length);
+            await _pipe.Reader.CompleteAsync().ConfigureAwait(false);
         }
+    }
 
-        internal void Write(ReadOnlyMemory<char> memory) => Write(memory.Span);
+    internal void Write(ReadOnlySpan<byte> span)
+    {
+        Span<byte> destination = _pipe.Writer.GetSpan(span.Length);
+        span.CopyTo(destination);
+        _pipe.Writer.Advance(span.Length);
+    }
+
+    internal void Write(ReadOnlyMemory<char> memory) => Write(memory.Span);
         
-        internal void Write(ReadOnlySpan<char> span)
-        {
-            _pipe.Writer.Advance(Encoding.UTF8.GetBytes(span, _pipe.Writer.GetSpan(Encoding.UTF8.GetByteCount(span))));
-        }
+    internal void Write(ReadOnlySpan<char> span)
+    {
+        _pipe.Writer.Advance(Encoding.UTF8.GetBytes(span, _pipe.Writer.GetSpan(Encoding.UTF8.GetByteCount(span))));
+    }
 
-        internal async ValueTask FlushAsync()
+    internal async ValueTask FlushAsync()
+    {
+        await _pipe.Writer.FlushAsync().ConfigureAwait(false);
+    }
+
+    internal async Task CloseAsync()
+    {
+        _pipe.Writer.Complete();
+        if (_pipe.Writer.UnflushedBytes > 0)
         {
             await _pipe.Writer.FlushAsync().ConfigureAwait(false);
         }
 
-        internal async Task CloseAsync()
+        await _readerTask.ConfigureAwait(false);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposedValue)
         {
-            _pipe.Writer.Complete();
-            if (_pipe.Writer.UnflushedBytes > 0)
+            if (disposing)
             {
-                await _pipe.Writer.FlushAsync().ConfigureAwait(false);
+                _handle.Dispose();
             }
 
-            await _readerTask.ConfigureAwait(false);
+            _disposedValue = true;
         }
+    }
 
-        protected virtual void Dispose(bool disposing)
-        {
-            if (!_disposedValue)
-            {
-                if (disposing)
-                {
-                    _handle.Dispose();
-                }
-
-                _disposedValue = true;
-            }
-        }
-
-        public void Dispose()
-        {
-            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
-        }
+    public void Dispose()
+    {
+        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
     }
 }
