@@ -3,7 +3,6 @@
 
 using System.IO.Pipelines;
 using System.Text;
-
 using Microsoft.Win32.SafeHandles;
 
 namespace HaveIBeenPwned.PwnedPasswords;
@@ -13,14 +12,21 @@ class FilePipe : IDisposable
     readonly SafeFileHandle _handle;
     readonly Pipe _pipe;
     readonly Task _readerTask;
-    long _offset;
     bool _disposedValue;
+    long _offset;
 
     internal FilePipe(SafeFileHandle handle)
     {
         _handle = handle;
-        _pipe = new Pipe();
+        _pipe = new();
         _readerTask = StartWriter();
+    }
+
+    public void Dispose()
+    {
+        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 
     async Task StartWriter()
@@ -29,12 +35,12 @@ class FilePipe : IDisposable
         {
             while (true)
             {
-                if (!_pipe.Reader.TryRead(out ReadResult result))
+                if (!_pipe.Reader.TryRead(out var result))
                 {
                     await _pipe.Reader.ReadAsync().ConfigureAwait(false);
                 }
 
-                foreach (ReadOnlyMemory<byte> item in result.Buffer)
+                foreach (var item in result.Buffer)
                 {
                     await RandomAccess.WriteAsync(_handle, item, _offset).ConfigureAwait(false);
                     _offset += item.Length;
@@ -56,22 +62,17 @@ class FilePipe : IDisposable
 
     internal void Write(ReadOnlySpan<byte> span)
     {
-        Span<byte> destination = _pipe.Writer.GetSpan(span.Length);
+        var destination = _pipe.Writer.GetSpan(span.Length);
         span.CopyTo(destination);
         _pipe.Writer.Advance(span.Length);
     }
 
     internal void Write(ReadOnlyMemory<char> memory) => Write(memory.Span);
-        
-    internal void Write(ReadOnlySpan<char> span)
-    {
-        _pipe.Writer.Advance(Encoding.UTF8.GetBytes(span, _pipe.Writer.GetSpan(Encoding.UTF8.GetByteCount(span))));
-    }
 
-    internal async ValueTask FlushAsync()
-    {
-        await _pipe.Writer.FlushAsync().ConfigureAwait(false);
-    }
+    internal void Write(ReadOnlySpan<char> span) =>
+        _pipe.Writer.Advance(Encoding.UTF8.GetBytes(span, _pipe.Writer.GetSpan(Encoding.UTF8.GetByteCount(span))));
+
+    internal async ValueTask FlushAsync() => await _pipe.Writer.FlushAsync().ConfigureAwait(false);
 
     internal async Task CloseAsync()
     {
@@ -95,12 +96,5 @@ class FilePipe : IDisposable
 
             _disposedValue = true;
         }
-    }
-
-    public void Dispose()
-    {
-        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-        Dispose(disposing: true);
-        GC.SuppressFinalize(this);
     }
 }
